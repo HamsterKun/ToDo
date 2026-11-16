@@ -11,4 +11,6 @@ public class NoteItem
     public bool Done { get; set; }
     public DateTime? DoneAt { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+    /// <summary>用户手写的详细备注，可多行。</summary>
+    public string Notes { get; set; } = "";
 }

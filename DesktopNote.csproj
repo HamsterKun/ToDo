@@ -10,7 +10,9 @@
     <AssemblyName>ToDo</AssemblyName>
     <RootNamespace>DesktopNote</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>1.0.0</Version>
+    <Version>1.1.2</Version>
+    <FileVersion>1.1.2.0</FileVersion>
+    <AssemblyVersion>1.1.2.0</AssemblyVersion>
     <Product>时笺</Product>
     <ApplicationIcon>app.ico</ApplicationIcon>
     <SatelliteResourceLanguages>zh-Hans</SatelliteResourceLanguages>

@@ -186,4 +186,78 @@ internal static class NativeMethods
     }
 
     public static IntPtr PrimaryMonitor() => MonitorFromPoint(new POINT(), MONITOR_DEFAULTTOPRIMARY);
+
+    // ── GDI 截图 ──────────────────────────────────────────────────────────
+
+    public const int SRCCOPY = 0x00CC0020;
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetDesktopWindow();
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr FindWindow(string? lpClassName, string? lpWindowName);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr FindWindowEx(IntPtr parent, IntPtr childAfter, string? className, string? windowName);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetWindow(IntPtr hWnd, uint uCmd);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetParent(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr SendMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("gdi32.dll")]
+    public static extern IntPtr CreateCompatibleDC(IntPtr hdc);
+
+    [DllImport("gdi32.dll")]
+    public static extern IntPtr CreateCompatibleBitmap(IntPtr hdc, int cx, int cy);
+
+    [DllImport("gdi32.dll")]
+    public static extern IntPtr SelectObject(IntPtr hdc, IntPtr h);
+
+    [DllImport("gdi32.dll")]
+    public static extern bool BitBlt(IntPtr hdc, int x, int y, int cx, int cy,
+        IntPtr hdcSrc, int x1, int y1, int rop);
+
+    [DllImport("gdi32.dll")]
+    public static extern bool DeleteDC(IntPtr hdc);
+
+    [DllImport("gdi32.dll")]
+    public static extern bool DeleteObject(IntPtr ho);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetDC(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    public static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);
+
+    /// <summary>
+    /// 找到桌面壁纸层窗口（WorkerW），这是 Wallpaper Engine 等第三方壁纸引擎渲染的目标。
+    /// 找不到时退化到 GetDesktopWindow()。
+    /// </summary>
+    public static IntPtr FindWallpaperWindow()
+    {
+        // 方法：给 Progman 发 0x052C 消息让系统分出 WorkerW 层，然后枚举找到其下的第二个 WorkerW
+        var progman = FindWindow("Progman", null);
+        if (progman == IntPtr.Zero) return GetDesktopWindow();
+
+        // 触发 Progman 创建 WorkerW（已存在也无妨）
+        SendMessage(progman, 0x052C, IntPtr.Zero, IntPtr.Zero);
+
+        IntPtr wallpaperHwnd = IntPtr.Zero;
+        EnumWindows((hWnd, _) =>
+        {
+            // 在每个顶层 WorkerW 窗口下找 SHELLDLL_DefView
+            var defView = FindWindowEx(hWnd, IntPtr.Zero, "SHELLDLL_DefView", null);
+            if (defView == IntPtr.Zero) return true;
+            // 拿 SHELLDLL_DefView 下面的下一个 WorkerW（壁纸就渲染在这里）
+            wallpaperHwnd = FindWindowEx(IntPtr.Zero, hWnd, "WorkerW", null);
+            return true;
+        }, IntPtr.Zero);
+
+        return wallpaperHwnd != IntPtr.Zero ? wallpaperHwnd : GetDesktopWindow();
+    }
 }

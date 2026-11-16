@@ -283,3 +283,8 @@ C:\Users\jiangchengrui\Desktop\DesktopNote\obj\Release\net10.0-windows\win-x64\T
 C:\Users\jiangchengrui\Desktop\DesktopNote\obj\Release\net10.0-windows\win-x64\refint\ToDo.dll
 C:\Users\jiangchengrui\Desktop\DesktopNote\obj\Release\net10.0-windows\win-x64\DesktopNote.genruntimeconfig.cache
 C:\Users\jiangchengrui\Desktop\DesktopNote\obj\Release\net10.0-windows\win-x64\ref\ToDo.dll
+C:\Users\jiangchengrui\Desktop\DesktopNote\obj\Release\net10.0-windows\win-x64\NoteDetailWindow.baml
+C:\Users\jiangchengrui\Desktop\DesktopNote\obj\Release\net10.0-windows\win-x64\NoteDetailWindow.g.cs
+C:\Users\jiangchengrui\Desktop\DesktopNote\bin\Release\net10.0-windows\win-x64\ToDo.pdb
+C:\Users\jiangchengrui\Desktop\DesktopNote\obj\Release\net10.0-windows\win-x64\DesktopNote.sourcelink.json
+C:\Users\jiangchengrui\Desktop\DesktopNote\obj\Release\net10.0-windows\win-x64\ToDo.pdb

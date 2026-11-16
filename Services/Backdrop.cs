@@ -1,4 +1,5 @@
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -7,19 +8,130 @@ using Microsoft.Win32;
 namespace DesktopNote.Services;
 
 /// <summary>
-/// 读取系统壁纸并按窗口位置裁剪出一块，供界面做模糊背景（伪毛玻璃 / 真壁纸模糊）。
+/// 读取桌面背景并按窗口物理像素位置裁剪，供界面做模糊背景（伪毛玻璃）。
+///
+/// 主路径：GDI BitBlt 直接从桌面背景窗口（WorkerW / Progman）截图。
+///   - 坐标系 = 物理屏幕坐标，多屏无偏移。
+///   - 兼容 Wallpaper Engine、Lively 等第三方壁纸引擎。
+///
+/// 降级路径：截图失败时退到读注册表壁纸文件（原有逻辑），
+///   多屏下可能有轻微位移，但至少不会全黑。
 /// </summary>
 public static class Backdrop
 {
-    private static BitmapSource? _image;
+    // ── 降级路径用的状态 ──────────────────────────────────────────────
+    private static BitmapSource? _fallbackImage;
     private static int _style = 10;
     private static bool _tile;
-    private static bool _loaded;
+    private static bool _fallbackLoaded;
+
+    // ── 壁纸背景窗口句柄缓存 ──────────────────────────────────────────
+    private static IntPtr _wallpaperHwnd = IntPtr.Zero;
+    private static DateTime _hwndRefreshedAt = DateTime.MinValue;
 
     public static void Reload()
     {
-        _loaded = true;
-        _image = null;
+        // 强制下次截图时重新查找壁纸窗口
+        _wallpaperHwnd = IntPtr.Zero;
+        _hwndRefreshedAt = DateTime.MinValue;
+
+        // 同时刷新降级路径的壁纸
+        _fallbackLoaded = false;
+        _fallbackImage = null;
+        LoadFallback();
+    }
+
+    // ── 公共入口 ──────────────────────────────────────────────────────
+
+    /// <summary>
+    /// 取窗口区域壁纸并做软件高斯近似模糊。
+    /// rectPhysical 是物理屏幕像素坐标（与 GetWindowRect 返回值一致）。
+    /// </summary>
+    public static BitmapSource? BlurredCrop(Int32Rect rectPhysical, double blurRadius)
+    {
+        var crop = Crop(rectPhysical);
+        if (crop == null) return null;
+
+        int radius = (int)Math.Round(blurRadius);
+        return radius < 1 ? crop : Blur(crop, radius);
+    }
+
+    // ── 裁剪 ──────────────────────────────────────────────────────────
+
+    /// <summary>按物理像素矩形裁剪壁纸；取不到时返回 null。</summary>
+    public static BitmapSource? Crop(Int32Rect rectPhysical)
+    {
+        // 1. 优先用 GDI 截桌面背景窗口
+        var gdi = CropFromDesktop(rectPhysical);
+        if (gdi != null) return gdi;
+
+        // 2. 降级：读注册表壁纸文件
+        return CropFromFile(rectPhysical);
+    }
+
+    // ── GDI 截图路径 ──────────────────────────────────────────────────
+
+    private static BitmapSource? CropFromDesktop(Int32Rect r)
+    {
+        if (r.Width <= 0 || r.Height <= 0) return null;
+
+        // 壁纸窗口句柄每 30 秒刷新一次（WE 重新加载壁纸时句柄可能变）
+        if (_wallpaperHwnd == IntPtr.Zero || (DateTime.Now - _hwndRefreshedAt).TotalSeconds > 30)
+        {
+            _wallpaperHwnd = NativeMethods.FindWallpaperWindow();
+            _hwndRefreshedAt = DateTime.Now;
+        }
+
+        IntPtr hwnd = _wallpaperHwnd;
+        IntPtr hdcSrc = IntPtr.Zero;
+        IntPtr hdcDst = IntPtr.Zero;
+        IntPtr hBmp = IntPtr.Zero;
+        IntPtr hOld = IntPtr.Zero;
+
+        try
+        {
+            hdcSrc = NativeMethods.GetDC(hwnd);
+            if (hdcSrc == IntPtr.Zero) return null;
+
+            hdcDst = NativeMethods.CreateCompatibleDC(hdcSrc);
+            if (hdcDst == IntPtr.Zero) return null;
+
+            hBmp = NativeMethods.CreateCompatibleBitmap(hdcSrc, r.Width, r.Height);
+            if (hBmp == IntPtr.Zero) return null;
+
+            hOld = NativeMethods.SelectObject(hdcDst, hBmp);
+
+            bool ok = NativeMethods.BitBlt(hdcDst, 0, 0, r.Width, r.Height,
+                                            hdcSrc, r.X, r.Y, NativeMethods.SRCCOPY);
+            if (!ok) return null;
+
+            // HBITMAP → BitmapSource（走 interop）
+            var src = System.Windows.Interop.Imaging.CreateBitmapSourceFromHBitmap(
+                hBmp, IntPtr.Zero, Int32Rect.Empty,
+                BitmapSizeOptions.FromEmptyOptions());
+            src.Freeze();
+            return src;
+        }
+        catch
+        {
+            return null;
+        }
+        finally
+        {
+            if (hOld != IntPtr.Zero && hdcDst != IntPtr.Zero)
+                NativeMethods.SelectObject(hdcDst, hOld);
+            if (hBmp != IntPtr.Zero) NativeMethods.DeleteObject(hBmp);
+            if (hdcDst != IntPtr.Zero) NativeMethods.DeleteDC(hdcDst);
+            if (hdcSrc != IntPtr.Zero) NativeMethods.ReleaseDC(hwnd, hdcSrc);
+        }
+    }
+
+    // ── 降级：读注册表壁纸文件（单屏较准，多屏可能有偏） ─────────────
+
+    private static void LoadFallback()
+    {
+        _fallbackLoaded = true;
+        _fallbackImage = null;
 
         try
         {
@@ -32,7 +144,8 @@ public static class Backdrop
             var path = key?.GetValue("WallPaper") as string;
             if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
             {
-                var transcoded = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                var transcoded = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
                     @"Microsoft\Windows\Themes\TranscodedWallpaper");
                 if (File.Exists(transcoded)) path = transcoded;
             }
@@ -46,129 +159,18 @@ public static class Backdrop
             bmp.StreamSource = fs;
             bmp.EndInit();
             bmp.Freeze();
-            _image = bmp;
+            _fallbackImage = bmp;
         }
         catch
         {
-            _image = null;
+            _fallbackImage = null;
         }
     }
 
-    /// <summary>
-    /// 取窗口区域壁纸并做软件高斯近似模糊。
-    /// 之所以自己糊而不是用 BlurEffect：WPF 的 Effect 会把内容画到中间层，圆角裁剪会失效，
-    /// 溢出到窗口边缘外就是一圈脏边。
-    /// </summary>
-    public static BitmapSource? BlurredCrop(Int32Rect rectPhysical, double blurRadius)
+    private static BitmapSource? CropFromFile(Int32Rect rectPhysical)
     {
-        var crop = Crop(rectPhysical);
-        if (crop == null) return null;
-
-        int radius = (int)Math.Round(blurRadius);
-        return radius < 1 ? crop : Blur(crop, radius);
-    }
-
-    private static BitmapSource Blur(BitmapSource src, int radius)
-    {
-        var formatted = src.Format == PixelFormats.Bgra32
-            ? src
-            : new FormatConvertedBitmap(src, PixelFormats.Bgra32, null, 0);
-
-        int w = formatted.PixelWidth;
-        int h = formatted.PixelHeight;
-        if (w < 2 || h < 2) return formatted;
-
-        int stride = w * 4;
-        var buffer = new byte[stride * h];
-        formatted.CopyPixels(buffer, stride, 0);
-
-        var temp = new byte[buffer.Length];
-
-        // 三次盒式模糊 ≈ 高斯
-        for (int i = 0; i < 3; i++)
-        {
-            BlurHorizontal(buffer, temp, w, h, radius, stride);
-            BlurVertical(temp, buffer, w, h, radius, stride);
-        }
-
-        var result = BitmapSource.Create(w, h, 96, 96, PixelFormats.Bgra32, null, buffer, stride);
-        result.Freeze();
-        return result;
-    }
-
-    private static void BlurHorizontal(byte[] src, byte[] dst, int w, int h, int r, int stride)
-    {
-        int window = r * 2 + 1;
-
-        for (int y = 0; y < h; y++)
-        {
-            int row = y * stride;
-            int sumB = 0, sumG = 0, sumR = 0;
-
-            for (int i = -r; i <= r; i++)
-            {
-                int xi = Math.Clamp(i, 0, w - 1) * 4 + row;
-                sumB += src[xi];
-                sumG += src[xi + 1];
-                sumR += src[xi + 2];
-            }
-
-            for (int x = 0; x < w; x++)
-            {
-                int o = row + x * 4;
-                dst[o] = (byte)(sumB / window);
-                dst[o + 1] = (byte)(sumG / window);
-                dst[o + 2] = (byte)(sumR / window);
-                dst[o + 3] = 255;
-
-                int outIdx = Math.Clamp(x - r, 0, w - 1) * 4 + row;
-                int inIdx = Math.Clamp(x + r + 1, 0, w - 1) * 4 + row;
-                sumB += src[inIdx] - src[outIdx];
-                sumG += src[inIdx + 1] - src[outIdx + 1];
-                sumR += src[inIdx + 2] - src[outIdx + 2];
-            }
-        }
-    }
-
-    private static void BlurVertical(byte[] src, byte[] dst, int w, int h, int r, int stride)
-    {
-        int window = r * 2 + 1;
-
-        for (int x = 0; x < w; x++)
-        {
-            int col = x * 4;
-            int sumB = 0, sumG = 0, sumR = 0;
-
-            for (int i = -r; i <= r; i++)
-            {
-                int yi = Math.Clamp(i, 0, h - 1) * stride + col;
-                sumB += src[yi];
-                sumG += src[yi + 1];
-                sumR += src[yi + 2];
-            }
-
-            for (int y = 0; y < h; y++)
-            {
-                int o = y * stride + col;
-                dst[o] = (byte)(sumB / window);
-                dst[o + 1] = (byte)(sumG / window);
-                dst[o + 2] = (byte)(sumR / window);
-                dst[o + 3] = 255;
-
-                int outIdx = Math.Clamp(y - r, 0, h - 1) * stride + col;
-                int inIdx = Math.Clamp(y + r + 1, 0, h - 1) * stride + col;
-                sumB += src[inIdx] - src[outIdx];
-                sumG += src[inIdx + 1] - src[outIdx + 1];
-                sumR += src[inIdx + 2] - src[outIdx + 2];
-            }
-        }
-    }
-
-    /// <summary>按屏幕物理像素矩形裁剪壁纸；取不到时返回 null（界面退化为纯色玻璃）。</summary>
-    public static BitmapSource? Crop(Int32Rect rectPhysical)
-    {
-        if (!_loaded) Reload();
-        var img = _image;
+        if (!_fallbackLoaded) LoadFallback();
+        var img = _fallbackImage;
         if (img == null) return null;
 
         try
@@ -240,6 +242,91 @@ public static class Backdrop
         catch
         {
             return null;
+        }
+    }
+
+    // ── 高斯模糊（三次盒式模糊近似） ─────────────────────────────────
+
+    private static BitmapSource Blur(BitmapSource src, int radius)
+    {
+        var formatted = src.Format == PixelFormats.Bgra32
+            ? src
+            : new FormatConvertedBitmap(src, PixelFormats.Bgra32, null, 0);
+
+        int w = formatted.PixelWidth;
+        int h = formatted.PixelHeight;
+        if (w < 2 || h < 2) return formatted;
+
+        int stride = w * 4;
+        var buffer = new byte[stride * h];
+        formatted.CopyPixels(buffer, stride, 0);
+
+        var temp = new byte[buffer.Length];
+
+        for (int i = 0; i < 3; i++)
+        {
+            BlurHorizontal(buffer, temp, w, h, radius, stride);
+            BlurVertical(temp, buffer, w, h, radius, stride);
+        }
+
+        var result = BitmapSource.Create(w, h, 96, 96, PixelFormats.Bgra32, null, buffer, stride);
+        result.Freeze();
+        return result;
+    }
+
+    private static void BlurHorizontal(byte[] src, byte[] dst, int w, int h, int r, int stride)
+    {
+        int window = r * 2 + 1;
+        for (int y = 0; y < h; y++)
+        {
+            int row = y * stride;
+            int sumB = 0, sumG = 0, sumR = 0;
+            for (int i = -r; i <= r; i++)
+            {
+                int xi = Math.Clamp(i, 0, w - 1) * 4 + row;
+                sumB += src[xi]; sumG += src[xi + 1]; sumR += src[xi + 2];
+            }
+            for (int x = 0; x < w; x++)
+            {
+                int o = row + x * 4;
+                dst[o] = (byte)(sumB / window);
+                dst[o + 1] = (byte)(sumG / window);
+                dst[o + 2] = (byte)(sumR / window);
+                dst[o + 3] = 255;
+                int outIdx = Math.Clamp(x - r, 0, w - 1) * 4 + row;
+                int inIdx = Math.Clamp(x + r + 1, 0, w - 1) * 4 + row;
+                sumB += src[inIdx] - src[outIdx];
+                sumG += src[inIdx + 1] - src[outIdx + 1];
+                sumR += src[inIdx + 2] - src[outIdx + 2];
+            }
+        }
+    }
+
+    private static void BlurVertical(byte[] src, byte[] dst, int w, int h, int r, int stride)
+    {
+        int window = r * 2 + 1;
+        for (int x = 0; x < w; x++)
+        {
+            int col = x * 4;
+            int sumB = 0, sumG = 0, sumR = 0;
+            for (int i = -r; i <= r; i++)
+            {
+                int yi = Math.Clamp(i, 0, h - 1) * stride + col;
+                sumB += src[yi]; sumG += src[yi + 1]; sumR += src[yi + 2];
+            }
+            for (int y = 0; y < h; y++)
+            {
+                int o = y * stride + col;
+                dst[o] = (byte)(sumB / window);
+                dst[o + 1] = (byte)(sumG / window);
+                dst[o + 2] = (byte)(sumR / window);
+                dst[o + 3] = 255;
+                int outIdx = Math.Clamp(y - r, 0, h - 1) * stride + col;
+                int inIdx = Math.Clamp(y + r + 1, 0, h - 1) * stride + col;
+                sumB += src[inIdx] - src[outIdx];
+                sumG += src[inIdx + 1] - src[outIdx + 1];
+                sumR += src[inIdx + 2] - src[outIdx + 2];
+            }
         }
     }
 }

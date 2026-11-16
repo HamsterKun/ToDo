@@ -40,6 +40,7 @@ public partial class MainWindow : Window
     private bool _resizing;
     private int _rsX, _rsY, _rsW, _rsH;
     private bool _showDone;
+    private NoteDetailWindow? _detailWin;
 
     public MainWindow(NoteStore store, AppSettings settings)
     {
@@ -88,7 +89,9 @@ public partial class MainWindow : Window
 
         Deactivated += (_, _) => TickVisibility();
         Activated += (_, _) => TickVisibility();
-        IsVisibleChanged += (_, _) => TickVisibility();
+        // 可见性变化时立即触发检查——用 BeginInvoke 推迟到当前消息处理完毕，
+        // 避免在 WPF 窗口关闭流程中途直接调 Show() 引发 InvalidOperationException
+        IsVisibleChanged += (_, _) => Dispatcher.BeginInvoke(TickVisibility);
     }
 
     private static Brush Freeze(string hex)
@@ -323,6 +326,9 @@ public partial class MainWindow : Window
 
     private void EnsureShown()
     {
+        // 窗口正在关闭时不能调 Show()
+        if (!IsLoaded || _hwnd == IntPtr.Zero) return;
+
         var changed = false;
 
         if (!IsVisible)
@@ -570,6 +576,9 @@ public partial class MainWindow : Window
             ToolTip = "编辑"
         };
         editBtn.Click += (_, _) => { _editingId = item.Id; RefreshAll(); };
+        // 阻止按钮点击事件冒泡到 row，避免触发详情窗口
+        editBtn.PreviewMouseLeftButtonDown += (_, e) => e.Handled = true;
+        editBtn.MouseLeftButtonDown += (_, e) => e.Handled = true;
 
         var delBtn = new Button
         {
@@ -585,6 +594,9 @@ public partial class MainWindow : Window
             if (_editingId == item.Id) _editingId = null;
             _store.Remove(item);
         };
+        // 阻止按钮点击事件冒泡到 row
+        delBtn.PreviewMouseLeftButtonDown += (_, e) => e.Handled = true;
+        delBtn.MouseLeftButtonDown += (_, e) => e.Handled = true;
 
         actions.Children.Add(editBtn);
         actions.Children.Add(delBtn);
@@ -604,9 +616,21 @@ public partial class MainWindow : Window
         row.MouseLeave += (_, _) => { row.Background = Brushes.Transparent; actions.Opacity = 0; };
         row.MouseLeftButtonDown += (_, e) =>
         {
-            if (e.ClickCount != 2) return;
-            _editingId = item.Id;
-            RefreshAll();
+            if (e.ClickCount == 2)
+            {
+                // 双击 → 内联编辑
+                _detailWin?.Close();
+                _detailWin = null;
+                _editingId = item.Id;
+                RefreshAll();
+                return;
+            }
+            // 单击 → 打开详情备注窗口（避免重复打开同一条目）
+            if (_detailWin != null && _detailWin.ItemId == item.Id) return;
+            _detailWin?.Close();
+            _detailWin = new NoteDetailWindow(item, _store, this);
+            _detailWin.Closed += (_, _) => _detailWin = null;
+            _detailWin.Show();
         };
 
         return row;

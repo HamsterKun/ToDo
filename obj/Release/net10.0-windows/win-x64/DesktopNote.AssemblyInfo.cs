@@ -12,11 +12,11 @@ using System.Reflection;
 
 [assembly: System.Reflection.AssemblyCompanyAttribute("ToDo")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Release")]
-[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6e04860c6333e8e6f4cefc538ecd43314bc76e3b")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.1.2.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.1.2+7f0820cdeabcd21a6f16ad51d3784efe67d34a5c")]
 [assembly: System.Reflection.AssemblyProductAttribute("时笺")]
 [assembly: System.Reflection.AssemblyTitleAttribute("ToDo")]
-[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.1.2.0")]
 [assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
 [assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
 
